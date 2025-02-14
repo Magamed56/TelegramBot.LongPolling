@@ -1,28 +1,62 @@
-import os
-from telebot import TeleBot
-from dotenv import load_dotenv
-from telebot.types import Message
+import sqlite3
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, ConversationHandler
 
-# Load environment variables
-load_dotenv()
-TELEGRAM_BOT_TOKEN: str = os.getenv('TELEGRAM_BOT_TOKEN')
+TOKEN = "YOUR_BOT_TOKEN"
 
-# Initialize bot
-bot = TeleBot(token=TELEGRAM_BOT_TOKEN)
+# Подключение к базе данных
+conn = sqlite3.connect("data.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, user_id INTEGER, text TEXT)")
+conn.commit()
 
+# Состояния для диалога
+ADDING = 1
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message: Message):
-    """ Handles the /start command by sending a "Hello world!" message in response. """
-    chat_id = message.chat.id
-    bot.send_message(chat_id, "Hello! 🍡 Send me a message and I'll echo it back to you")
+# Клавиатура
+keyboard = [["Добавить данные", "Показать данные"]]
+reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
+async def start(update: Update, context: CallbackContext):
+    await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
-@bot.message_handler(func=lambda message: True)
-def echo_message(message: Message):
-    """Echo the user message."""
-    chat_id = message.chat.id
-    bot.send_message(chat_id, message.text)
+async def add_data(update: Update, context: CallbackContext):
+    await update.message.reply_text("Введите данные для сохранения:")
+    return ADDING
 
+async def save_data(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    text = update.message.text
 
-bot.infinity_polling()
+    cursor.execute("INSERT INTO messages (user_id, text) VALUES (?, ?)", (user_id, text))
+    conn.commit()
+
+    await update.message.reply_text("Данные сохранены!", reply_markup=reply_markup)
+    return ConversationHandler.END
+
+async def get_messages(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    cursor.execute("SELECT text FROM messages WHERE user_id=?", (user_id,))
+    messages = cursor.fetchall()
+
+    if messages:
+        response = "\n".join([msg[0] for msg in messages])
+    else:
+        response = "У вас нет сохранённых данных."
+
+    await update.message.reply_text(response, reply_markup=reply_markup)
+
+app = Application.builder().token(TOKEN).build()
+
+conv_handler = ConversationHandler(
+    entry_points=[MessageHandler(filters.Regex("^Добавить данные$"), add_data)],
+    states={ADDING: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_data)]},
+    fallbacks=[]
+)
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.Regex("^Показать данные$"), get_messages))
+app.add_handler(conv_handler)
+
+app.run_polling()
+
